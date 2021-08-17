@@ -15,11 +15,11 @@ StaticJsonDocument<256> doc;
 
 AsyncWebServer server(80);
 AsyncWebSocket ws("/display");
-uint32_t clientID = 0;
+uint8_t clientID = 0;
 
 TFT_eSPI tft = TFT_eSPI();
 
-uint8_t* bufferStore;
+uint8_t* bufferStore = NULL;
 
 void storePixelVector(uint8_t* bufferStore) {
   fs::File img_file = SD.open("/img/file", "w");
@@ -30,13 +30,6 @@ void storePixelVector(uint8_t* bufferStore) {
   img_file.print((char*)bufferStore);
 
   img_file.close();
-}
-
-void drawPixel(unsigned int index, uint8_t r, uint8_t g, uint8_t b) {
-  uint32_t x = (index % 60) * 4;
-  uint32_t y = (index / 60) * 4;
-
-  tft.fillRect(x, y, 4, 4, tft.color565(r, g, b));
 }
 
 void drawPixel(unsigned int index, uint16_t color) {
@@ -63,103 +56,77 @@ void loadPixelVector() {
   img_file.close();
 }
 
-
 void onWsEvent(AsyncWebSocket* server, AsyncWebSocketClient* client, AwsEventType type, void* arg, uint8_t* data, size_t len) {
-  // Serial.println("type");
-  // Serial.println(type);
-  // if (type == WS_EVT_DATA) {
-  //   AwsFrameInfo* info = (AwsFrameInfo*)arg;
-  //   Serial.println("final");
-  //   Serial.println(info->final);
-  //   Serial.println("len");
-  //   Serial.println(len);
-  //   if (info->final && info->index == 0 && info->len == len) {
-  //     if (info->opcode == WS_TEXT) {
-  //       data[len] = 0;
-  //       // DeserializationError err = deserializeJson(doc, data, sizeof(doc));
-  //       // if (err) {
-  //       //   Serial.println("Error deserializing json");
-  //       // } else {
-  //       //   Serial.println("received");
-  //       //   uint8_t r, g, b;
-  //       //   r = doc["r"].as<uint8_t>();
-  //       //   g = doc["g"].as<uint8_t>();
-  //       //   b = doc["b"].as<uint8_t>();
-
-  //       //   const char* fill = doc["fill"];
-  //       //   const char* store = doc["store"];
-  //       //   if (fill) {
-  //       //     tft.fillScreen(tft.color565(r, g, b));
-  //       //   } else if (store) {
-  //       //     size_t size = JSON_ARRAY_SIZE(3600);
-  //       //     Serial.println("size");
-  //       //     Serial.println(size);
-  //       //     // storePixelVector();
-  //       //   } else {
-  //       //     unsigned int index = doc["cellIdx"].as<unsigned int>();
-  //       //     drawPixel(index, r, g, b);
-  //       //   }
-  //       // }
-  //     }
-  //   }
-  // } else if (type == WS_EVT_CONNECT) {
-  //   clientID = client->id();
-  //   Serial.println("Client connected");
-  // } else if (type == WS_EVT_DISCONNECT) {
-  //   clientID = 0;
-  //   Serial.println("Client disconnected");
-  //   tft.fillScreen(TFT_WHITE);
-  // }
-  if(type == WS_EVT_CONNECT){
-    ESP_LOGD("", "ws[%s][%u] connect\n", server->url(), client->id());
-  } else if(type == WS_EVT_DISCONNECT){
-    //client disconnected
-    ESP_LOGD("", "ws[%s][%u] disconnect: %u\n", server->url(), client->id());
-  } else if(type == WS_EVT_ERROR){
-    //error was received from the other end
-    ESP_LOGD("", "ws[%s][%u] error(%u): %s\n", server->url(), client->id(), *((uint16_t*)arg), (char*)data);
-  } else if(type == WS_EVT_DATA){
-    //data packet
-    AwsFrameInfo * info = (AwsFrameInfo*)arg;
-    if(info->final && info->index == 0 && info->len == len){
-      //the whole message is in a single frame and we got all of it's data
-      ESP_LOGD("", "ws[%s][%u] %s-message[%llu]: ", server->url(), client->id(), (info->opcode == WS_TEXT)?"text":"binary", info->len);
-      if(info->opcode == WS_TEXT){
+  if (type == WS_EVT_DATA) {
+    AwsFrameInfo* info = (AwsFrameInfo*)arg;
+    if (info->final && info->index == 0 && info->len == len) {
+      if (info->opcode == WS_TEXT) {
         data[len] = 0;
-        ESP_LOGD("", "%s\n", (char*)data);
+        DeserializationError err = deserializeJson(doc, data, sizeof(doc));
+        if (err) {
+          ESP_LOGE("", "Error deserializing json on ws received");
+        } else {
+          uint16_t color = doc["color"].as<uint16_t>();
+          if (!color) {
+            ESP_LOGE("", "Invalid color from json ws");
+            return;
+          }
+
+          const char* fill = doc["fill"];
+          if (fill) {
+            tft.fillScreen(color);
+          } else {
+            unsigned int index = doc["cellIdx"].as<unsigned int>();
+            drawPixel(index, color);
+          }
+        }
       }
     } else {
-      //message is comprised of multiple frames or the frame is split into multiple packets
-      if(info->index == 0){
-        if(info->num == 0)
-          ESP_LOGD("", "ws[%s][%u] %s-message start\n", server->url(), client->id(), (info->message_opcode == WS_TEXT)?"text":"binary");
+      // message is comprised of multiple frames or the frame is split into multiple packets
+      if (info->index == 0) {
+        if (info->num == 0) {
+          ESP_LOGD("", "ws[%s][%u] %s-message start\n", server->url(), client->id(), (info->message_opcode == WS_TEXT) ? "text" : "binary");
+        }
         ESP_LOGD("", "ws[%s][%u] frame[%u] start[%llu]\n", server->url(), client->id(), info->num, info->len);
 
         bufferStore = (uint8_t*)pvPortMalloc((info->len) +1);
         if (!bufferStore) {
-          ESP_LOGD("", "could not allocate buffer");
+          ESP_LOGD("", "could not allocate pixel buffer");
           return;
         }
-        ESP_LOGD("", "buffer initialized");
+        ESP_LOGD("", "pixel buffer initialized");
       }
 
-      ESP_LOGD("", "ws[%s][%u] frame[%u] %s[%llu - %llu]: ", server->url(), client->id(), info->num, (info->message_opcode == WS_TEXT)?"text":"binary", info->index, info->index + len);
-      if(info->message_opcode == WS_TEXT){
+      ESP_LOGD("", "ws[%s][%u] frame[%u] %s[%llu - %llu]: ", server->url(), client->id(), info->num, (info->message_opcode == WS_TEXT) ? "text" : "binary", info->index, info->index + len);
+      if (info->message_opcode == WS_TEXT) {
         data[len] = 0;
-        memcpy(&bufferStore[info->index], data, len);
-        // ESP_LOGD("", "%s\n", (char*)data);
+        if (bufferStore) {
+          memcpy(&bufferStore[info->index], data, len);
+        }
       }
 
-      if((info->index + len) == info->len){
+      if ((info->index + len) == info->len) {
         ESP_LOGD("", "ws[%s][%u] frame[%u] end[%llu]\n", server->url(), client->id(), info->num, info->len);
-        memcpy(&bufferStore[info->len], "\0", 1);
-        if(info->final){
-          ESP_LOGD("", "ws[%s][%u] %s-message end\n", server->url(), client->id(), (info->message_opcode == WS_TEXT)?"text":"binary");
-          storePixelVector(bufferStore);
-          vPortFree(bufferStore);
+        if (bufferStore) {
+          memcpy(&bufferStore[info->len], '\0', 1);
+        }
+        if (info->final) {
+          ESP_LOGD("", "ws[%s][%u] %s-message end\n", server->url(), client->id(), (info->message_opcode == WS_TEXT) ? "text" : "binary");
+          if (bufferStore) {
+            storePixelVector(bufferStore);
+            vPortFree(bufferStore);
+          }
         }
       }
     }
+  } else if (type == WS_EVT_CONNECT) {
+    clientID = client->id();
+    ESP_LOGD("", "ws[%s][%u] connect\n", server->url(), clientID);
+  } else if (type == WS_EVT_DISCONNECT) {
+    clientID = 0;
+    ESP_LOGD("", "ws[%s][%u] disconnect: %u\n", server->url(), client->id());
+  } else if(type == WS_EVT_ERROR) {
+    ESP_LOGD("", "ws[%s][%u] error(%u): %s\n", server->url(), client->id(), *((uint16_t*)arg), (char*)data);
   }
 }
 
@@ -169,22 +136,24 @@ void setup() {
   WiFi.begin(WIFI_SSID, WIFI_PASS);
 
   if (!SD.begin()) {
-    Serial.println("SD Card mount failed");
+    ESP_LOGE("", "SD Card mount failed");
     return;
   }
 
   if (!SD.exists("/img")) {
-    SD.mkdir("/img");
+    ESP_LOGD("", "img dir does not exist");
+    if (SD.mkdir("/img")) {
+      ESP_LOGD("", "img dir created");
+    } else {
+      ESP_LOGE("", "could not create img dir");
+    }
   }
 
-  testSdCard();
+  // testSdCard();
 
   if (WiFi.waitForConnectResult() != WL_CONNECTED) {
-    Serial.printf("WiFi Failed!\n");
     return;
   }
-  Serial.println("WiFi connected\n");
-  Serial.println(WiFi.localIP());
 
   tft.init();
   tft.fillScreen(TFT_WHITE);
