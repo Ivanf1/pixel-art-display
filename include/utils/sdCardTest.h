@@ -1,0 +1,6 @@
+#ifndef PIXELART_UTILS_SDCARDTEST
+#define PIXELART_UTILS_SDCARDTEST
+
+void testSdCard();
+
+#endif
