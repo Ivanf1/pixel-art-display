@@ -9,7 +9,11 @@
 #include "FS.h"
 
 #include "secrets.h"
+#include "utils/reboot.h"
+#include "store/pixelVectorManager.h"
+#ifdef SD_TEST
 #include "utils/sdCardTest.h"
+#endif
 
 StaticJsonDocument<256> doc;
 
@@ -21,39 +25,11 @@ TFT_eSPI tft = TFT_eSPI();
 
 uint8_t* bufferStore = NULL;
 
-void storePixelVector(uint8_t* bufferStore) {
-  fs::File img_file = SD.open("/img/file", "w");
-  if (!img_file) {
-    ESP_LOGE("", "could not open image file");
-  }
-
-  img_file.print((char*)bufferStore);
-
-  img_file.close();
-}
-
 void drawPixel(unsigned int index, uint16_t color) {
-  uint32_t x = (index % 60) * 4;
-  uint32_t y = (index / 60) * 4;
+  int32_t x = (index % 60) * 4;
+  int32_t y = (index / 60) * 4;
 
   tft.fillRect(x, y, 4, 4, color);
-}
-
-void loadPixelVector() {
-  fs::File img_file = SD.open("/img/file", "r");
-  if (!img_file) {
-    ESP_LOGE("", "could not open image file");
-  }
-
-  unsigned int max = 60 * 60;
-  unsigned int i = 0;
-  while (img_file.available() && i <= max) {
-    long color = img_file.parseInt();
-    drawPixel(i, color);
-    i++;
-  }
-
-  img_file.close();
 }
 
 void onWsEvent(AsyncWebSocket* server, AsyncWebSocketClient* client, AwsEventType type, void* arg, uint8_t* data, size_t len) {
@@ -64,11 +40,11 @@ void onWsEvent(AsyncWebSocket* server, AsyncWebSocketClient* client, AwsEventTyp
         data[len] = 0;
         DeserializationError err = deserializeJson(doc, data, sizeof(doc));
         if (err) {
-          ESP_LOGE("", "Error deserializing json on ws received");
+          ESP_LOGE(TAG, "Error deserializing json on ws received");
         } else {
           uint16_t color = doc["color"].as<uint16_t>();
           if (!color) {
-            ESP_LOGE("", "Invalid color from json ws");
+            ESP_LOGE(TAG, "Invalid color from json ws");
             return;
           }
 
@@ -85,19 +61,19 @@ void onWsEvent(AsyncWebSocket* server, AsyncWebSocketClient* client, AwsEventTyp
       // message is comprised of multiple frames or the frame is split into multiple packets
       if (info->index == 0) {
         if (info->num == 0) {
-          ESP_LOGD("", "ws[%s][%u] %s-message start\n", server->url(), client->id(), (info->message_opcode == WS_TEXT) ? "text" : "binary");
+          ESP_LOGD(TAG, "ws[%s][%u] %s-message start\n", server->url(), client->id(), (info->message_opcode == WS_TEXT) ? "text" : "binary");
         }
-        ESP_LOGD("", "ws[%s][%u] frame[%u] start[%llu]\n", server->url(), client->id(), info->num, info->len);
+        ESP_LOGD(TAG, "ws[%s][%u] frame[%u] start[%llu]\n", server->url(), client->id(), info->num, info->len);
 
         bufferStore = (uint8_t*)pvPortMalloc((info->len) +1);
         if (!bufferStore) {
-          ESP_LOGD("", "could not allocate pixel buffer");
+          ESP_LOGD(TAG, "could not allocate pixel buffer");
           return;
         }
-        ESP_LOGD("", "pixel buffer initialized");
+        ESP_LOGD(TAG, "pixel buffer initialized");
       }
 
-      ESP_LOGD("", "ws[%s][%u] frame[%u] %s[%llu - %llu]: ", server->url(), client->id(), info->num, (info->message_opcode == WS_TEXT) ? "text" : "binary", info->index, info->index + len);
+      ESP_LOGD(TAG, "ws[%s][%u] frame[%u] %s[%llu - %llu]: ", server->url(), client->id(), info->num, (info->message_opcode == WS_TEXT) ? "text" : "binary", info->index, info->index + len);
       if (info->message_opcode == WS_TEXT) {
         data[len] = 0;
         if (bufferStore) {
@@ -106,14 +82,14 @@ void onWsEvent(AsyncWebSocket* server, AsyncWebSocketClient* client, AwsEventTyp
       }
 
       if ((info->index + len) == info->len) {
-        ESP_LOGD("", "ws[%s][%u] frame[%u] end[%llu]\n", server->url(), client->id(), info->num, info->len);
+        ESP_LOGD(TAG, "ws[%s][%u] frame[%u] end[%llu]\n", server->url(), client->id(), info->num, info->len);
         if (bufferStore) {
-          memcpy(&bufferStore[info->len], '\0', 1);
+          bufferStore[info->len] = '\0';
         }
         if (info->final) {
-          ESP_LOGD("", "ws[%s][%u] %s-message end\n", server->url(), client->id(), (info->message_opcode == WS_TEXT) ? "text" : "binary");
+          ESP_LOGD(TAG, "ws[%s][%u] %s-message end\n", server->url(), client->id(), (info->message_opcode == WS_TEXT) ? "text" : "binary");
           if (bufferStore) {
-            storePixelVector(bufferStore);
+            storePixelVector(bufferStore, "/img/file");
             vPortFree(bufferStore);
           }
         }
@@ -121,12 +97,12 @@ void onWsEvent(AsyncWebSocket* server, AsyncWebSocketClient* client, AwsEventTyp
     }
   } else if (type == WS_EVT_CONNECT) {
     clientID = client->id();
-    ESP_LOGD("", "ws[%s][%u] connect\n", server->url(), clientID);
+    ESP_LOGD(TAG, "ws[%s][%u] connect\n", server->url(), clientID);
   } else if (type == WS_EVT_DISCONNECT) {
     clientID = 0;
-    ESP_LOGD("", "ws[%s][%u] disconnect: %u\n", server->url(), client->id());
+    ESP_LOGD(TAG, "ws[%s][%u] disconnect: %u\n", server->url(), client->id());
   } else if(type == WS_EVT_ERROR) {
-    ESP_LOGD("", "ws[%s][%u] error(%u): %s\n", server->url(), client->id(), *((uint16_t*)arg), (char*)data);
+    ESP_LOGD(TAG, "ws[%s][%u] error(%u): %s\n", server->url(), client->id(), *((uint16_t*)arg), (char*)data);
   }
 }
 
@@ -136,23 +112,24 @@ void setup() {
   WiFi.begin(WIFI_SSID, WIFI_PASS);
 
   if (!SD.begin()) {
-    ESP_LOGE("", "SD Card mount failed");
-    return;
+    rebootWithMsg("SD Card mount failed");
   }
+
+  #ifdef SD_TEST
+  testSdCard();
+  #endif
 
   if (!SD.exists("/img")) {
     ESP_LOGD("", "img dir does not exist");
     if (SD.mkdir("/img")) {
       ESP_LOGD("", "img dir created");
     } else {
-      ESP_LOGE("", "could not create img dir");
+      rebootWithMsg("Could not create img dir");
     }
   }
 
-  // testSdCard();
-
   if (WiFi.waitForConnectResult() != WL_CONNECTED) {
-    return;
+    rebootWithMsg("Could not connect to WiFi");
   }
 
   tft.init();
@@ -162,7 +139,7 @@ void setup() {
   server.addHandler(&ws);
   server.begin();
 
-  loadPixelVector();
+  loadPixelVector(drawPixel, "/img/file", TFT_WIDTH, TFT_HEIGHT);
 }
 
 void loop() {}
