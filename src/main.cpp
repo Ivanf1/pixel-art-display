@@ -137,6 +137,15 @@ void setup() {
 
   ws.onEvent(onWsEvent);
   server.addHandler(&ws);
+
+  server.on("/img/onscreen", HTTP_GET, [](AsyncWebServerRequest* request) {
+    AsyncWebServerResponse* response = new AsyncWebServerResponse();
+    response = request->beginResponse(SD, "/img/file", "text/plain");
+    response->addHeader("Access-Control-Allow-Origin", "*");
+    response->setCode(200);
+    request->send(response);
+  });
+
   server.begin();
 
   loadPixelVector(drawPixel, "/img/file", TFT_WIDTH, TFT_HEIGHT);
